@@ -1,0 +1,21 @@
+name: Bug report
+description: Report a reproducible problem in the wizard or generated output.
+title: "Bug: "
+labels: [bug]
+body:
+  - type: textarea
+    attributes:
+      label: What happened?
+      description: Explain what you expected and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: How can we reproduce it?
+      description: Include the wizard stage, operating system, and exact steps. Remove API keys and private campaign data.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Anything else?
+      description: Screenshots and accessibility details are welcome.

@@ -1,0 +1,12 @@
+# NotebookLM bridge runtime dependencies
+#
+# Install:
+#   pip install -r requirements.txt
+#   playwright install chromium    # for browser-based login
+#
+# Then one-time:
+#   notebooklm login
+
+# Exact versions tested against this adapter's API surface.
+notebooklm-py[browser]==0.3.4
+playwright==1.59.0

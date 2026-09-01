@@ -1,0 +1,630 @@
+/* ============================================================================
+   FRACTAL FRAMEWORK WIZARD — Aesthetic system v1
+   ----------------------------------------------------------------------------
+   Single source of truth for both surfaces:
+     1. The wizard React UI itself (Home/Settings/Intake/Campaign).
+     2. The generated advocacy sites' default appearance (used by
+        wizard/server/_core/siteTemplate.ts as the Phase B fallback when
+        Stitch is unconfigured or fails).
+
+   Theming hook:
+     Override --amber + (per-campaign) hero SVG and the whole layout reskins.
+     --sage is reserved for TIER badges so the tier signal stays distinct
+     from primary color across campaigns.
+   ============================================================================ */
+
+:root {
+  color-scheme: dark;
+
+  /* Warm-near-black base — never #000, so amber stays alive on top */
+  --bg-0: oklch(0.135 0.012 60);
+  --bg-1: oklch(0.165 0.014 60);
+  --bg-2: oklch(0.205 0.016 60);
+  --rule: oklch(0.265 0.018 60);
+
+  /* Warm-white ink scale */
+  --ink:   oklch(0.95 0.012 80);
+  --ink-2: oklch(0.78 0.010 70);
+  --ink-3: oklch(0.55 0.008 65);
+  --ink-4: oklch(0.40 0.006 60);
+
+  /* Campaign primary — warm amber pulled from Ref 2 */
+  --amber:       oklch(0.78 0.16 60);
+  --amber-glow:  oklch(0.86 0.14 70);
+  --amber-deep:  oklch(0.52 0.13 50);
+
+  /* Organic accent — used sparingly; reserved for TIER chips */
+  --sage:      oklch(0.72 0.08 150);
+  --sage-deep: oklch(0.30 0.04 150);
+
+  /* Heat — for the "stakes" section + alarm states */
+  --heat: oklch(0.62 0.18 30);
+
+  /* Status semantics — kept on the warm scale so they don't clash with amber */
+  --ok:   oklch(0.72 0.08 150);
+  --warn: oklch(0.78 0.14 75);
+  --bad:  oklch(0.62 0.18 30);
+}
+
+html, body {
+  background: var(--bg-0);
+  color: var(--ink);
+}
+
+body {
+  font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  font-feature-settings: 'ss01';
+  /* Two-layer ground:
+     (1) a top vignette that grounds the hero, like a horizon glow;
+     (2) repeating topographic contour lines as the page-wide canvas —
+         abstract "land-as-data" motif that's issue-agnostic. */
+  background-image:
+    radial-gradient(ellipse 90% 50% at 50% 0%, oklch(0.22 0.06 55 / 0.4), transparent 70%),
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='1200' height='1200' viewBox='0 0 1200 1200'><g fill='none' stroke='%23c08040' stroke-width='0.6' opacity='0.045'><path d='M-60 220 Q 140 180 280 220 T 560 200 T 820 240 T 1100 220 T 1300 240'/><path d='M-60 320 Q 160 280 300 320 T 580 300 T 840 340 T 1120 320 T 1300 340'/><path d='M-60 420 Q 180 380 320 420 T 600 400 T 860 440 T 1140 420 T 1300 440'/><path d='M-60 520 Q 200 480 340 520 T 620 500 T 880 540 T 1160 520 T 1300 540'/><path d='M-60 620 Q 220 580 360 620 T 640 600 T 900 640 T 1180 620 T 1300 640'/><path d='M-60 720 Q 240 680 380 720 T 660 700 T 920 740 T 1200 720 T 1300 740'/><path d='M-60 820 Q 260 780 400 820 T 680 800 T 940 840 T 1220 820 T 1300 840'/><path d='M-60 920 Q 280 880 420 920 T 700 900 T 960 940 T 1240 920 T 1300 940'/><path d='M-60 1020 Q 300 980 440 1020 T 720 1000 T 980 1040 T 1260 1020 T 1300 1040'/></g></svg>");
+  background-repeat: no-repeat, repeat;
+  background-attachment: fixed, fixed;
+}
+
+/* ============================================================================
+   TYPE TOKENS
+   ============================================================================ */
+
+.t-display  { font-family: 'Space Grotesk', sans-serif; font-weight: 700; letter-spacing: -0.02em; }
+.t-flourish { font-family: 'Newsreader', serif; font-style: italic; font-weight: 500; }
+.t-mono     { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+
+/* Headings default to the display face. Body text inherits Inter from <body>. */
+h1, h2, h3, h4 {
+  font-family: 'Space Grotesk', sans-serif;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+}
+
+code, kbd, samp, pre {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+/* ============================================================================
+   CITATIONS — preserved verbatim for use in the generated-site preview.
+   Not used directly by the wizard UI chrome, but lives in the same stylesheet
+   so a single import covers both surfaces.
+   ============================================================================ */
+
+.cite {
+  display: inline-block;
+  position: relative;
+  vertical-align: baseline;
+  margin: 0 1px;
+  text-decoration: none;
+  line-height: 0;
+}
+.cite-k {
+  display: inline-block;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  padding: 2px 4px;
+  color: var(--amber);
+  background: oklch(0.22 0.04 55 / 0.55);
+  border: 1px solid oklch(0.45 0.10 55 / 0.45);
+  border-radius: 2px;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+  cursor: pointer;
+  vertical-align: 1px;
+}
+.cite-k::before { content: '['; opacity: 0.55; margin-right: 1px; }
+.cite-k::after  { content: ']'; opacity: 0.55; margin-left: 1px; }
+
+.cite:hover .cite-k {
+  color: var(--bg-0);
+  background: var(--amber);
+  border-color: var(--amber-glow);
+  box-shadow: 0 0 0 2px oklch(0.78 0.16 60 / 0.18);
+}
+
+.cite-c {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: min(380px, 92vw);
+  padding: 14px 16px;
+  background: var(--bg-0);
+  border: 1px solid var(--amber);
+  z-index: 100;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  text-align: left;
+  text-transform: none;
+  line-height: 1.45;
+  transition: opacity 0.12s ease;
+  box-shadow:
+    0 24px 60px oklch(0 0 0 / 0.85),
+    inset 0 0 0 1px oklch(0.78 0.16 60 / 0.10);
+}
+.cite:hover .cite-c { opacity: 1; visibility: visible; }
+
+.cite-c-label {
+  display: block;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  color: var(--amber);
+  text-transform: uppercase;
+  padding-bottom: 8px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid oklch(0.45 0.10 55 / 0.35);
+}
+.cite-c-title {
+  display: block;
+  font-family: 'Inter', sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink);
+  line-height: 1.4;
+  margin-bottom: 6px;
+}
+.cite-c-url {
+  display: block;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: var(--ink-3);
+  word-break: break-all;
+  line-height: 1.5;
+}
+.cite-c-key {
+  display: block;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9.5px;
+  color: var(--amber);
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed oklch(0.45 0.10 55 / 0.4);
+  letter-spacing: 0.02em;
+}
+
+.tier {
+  display: inline-block;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9.5px;
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  padding: 2px 5px;
+  color: var(--sage);
+  background: oklch(0.24 0.04 150 / 0.5);
+  border: 1px solid oklch(0.45 0.06 150 / 0.45);
+  border-radius: 2px;
+  white-space: nowrap;
+  margin-left: 2px;
+  vertical-align: 1px;
+}
+.tier::before { content: '·'; opacity: 0.6; margin-right: 3px; }
+
+/* ============================================================================
+   FRAMES, MARKS, RULES — the unifying terminal-readout motif
+   ============================================================================ */
+
+.frame {
+  position: relative;
+  background: oklch(0.165 0.014 60 / 0.55);
+  border: 1px solid var(--rule);
+}
+/* Four amber corner crops — drawn with pseudo-elements so the markup stays clean.
+   Requires a <span class="br"></span> child for the bottom two corners. */
+.frame::before,
+.frame::after,
+.frame > .br::before,
+.frame > .br::after {
+  content: '';
+  position: absolute;
+  width: 10px; height: 10px;
+  border: 1px solid var(--amber);
+  pointer-events: none;
+}
+.frame::before { top: -1px; left: -1px;  border-right: 0; border-bottom: 0; }
+.frame::after  { top: -1px; right: -1px; border-left: 0;  border-bottom: 0; }
+.frame > .br::before { bottom: -1px; left: -1px;  border-right: 0; border-top: 0; }
+.frame > .br::after  { bottom: -1px; right: -1px; border-left: 0;  border-top: 0; }
+
+.section-mark {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.22em;
+  color: var(--amber);
+  text-transform: uppercase;
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+.section-mark::before {
+  content: '';
+  width: 28px; height: 1px;
+  background: var(--amber);
+  display: inline-block;
+}
+
+.hash-rule {
+  height: 1px;
+  background-image: repeating-linear-gradient(
+    to right,
+    oklch(0.45 0.10 55 / 0.6) 0,
+    oklch(0.45 0.10 55 / 0.6) 4px,
+    transparent 4px,
+    transparent 10px
+  );
+}
+
+/* ============================================================================
+   BUTTONS
+   ============================================================================ */
+
+.btn-amber {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 22px;
+  background: var(--amber);
+  color: var(--bg-0);
+  font-family: 'Space Grotesk', sans-serif;
+  font-weight: 600;
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border: 1px solid var(--amber);
+  transition: all 0.15s ease;
+  cursor: pointer;
+}
+.btn-amber:hover:not(:disabled) {
+  background: var(--amber-glow);
+  box-shadow: 0 0 0 6px oklch(0.78 0.16 60 / 0.15);
+}
+.btn-amber:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.btn-amber .arrow { transition: transform 0.15s ease; }
+.btn-amber:hover:not(:disabled) .arrow { transform: translateX(4px); }
+
+/* Compact ghost / secondary — for "Cancel", "Re-probe", small actions */
+.btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  background: transparent;
+  color: var(--ink-2);
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 500;
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  border: 1px solid var(--rule);
+  transition: all 0.15s ease;
+  cursor: pointer;
+}
+.btn-ghost:hover:not(:disabled) {
+  color: var(--ink);
+  border-color: var(--ink-4);
+  background: oklch(0.20 0.012 60 / 0.4);
+}
+.btn-ghost:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ============================================================================
+   NAV
+   ============================================================================ */
+
+.nav-link {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  transition: color 0.15s;
+  text-decoration: none;
+}
+.nav-link:hover { color: var(--ink); }
+.nav-link.cta { color: var(--amber); }
+.nav-link.cta:hover { color: var(--amber-glow); }
+.nav-link.active { color: var(--ink); }
+
+.nav-bar {
+  background: oklch(0.135 0.012 60 / 0.78);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--rule);
+}
+
+/* ============================================================================
+   STATS / READOUT ROW
+   ============================================================================ */
+
+@keyframes pulse-amber {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.35; transform: scale(0.8); }
+}
+.pulse-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--amber);
+  animation: pulse-amber 1.8s ease-in-out infinite;
+}
+
+.stat-line {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px dashed oklch(0.30 0.02 60);
+  font-family: 'JetBrains Mono', monospace;
+}
+.stat-line:last-child { border-bottom: 0; }
+.stat-line .k {
+  font-size: 9.5px;
+  color: var(--ink-4);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  flex: 0 0 110px;
+}
+.stat-line .v {
+  color: var(--amber);
+  font-size: 17px;
+  font-weight: 500;
+  flex: 1;
+  letter-spacing: -0.01em;
+}
+.stat-line .u {
+  font-size: 10px;
+  color: var(--ink-3);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.stat-line.dim .v { color: var(--ink-2); }
+.stat-line.alarm .v { color: var(--heat); }
+
+/* Outline numeral for fact cards */
+.big-num {
+  font-family: 'Space Grotesk', sans-serif;
+  font-weight: 700;
+  font-size: 88px;
+  line-height: 0.85;
+  letter-spacing: -0.05em;
+  -webkit-text-stroke: 1px var(--amber);
+  color: transparent;
+  user-select: none;
+}
+
+/* ============================================================================
+   SLOTS / PLACEHOLDERS
+   ============================================================================ */
+
+.slot {
+  position: relative;
+  background:
+    repeating-linear-gradient(
+      45deg,
+      oklch(0.18 0.012 60) 0px,
+      oklch(0.18 0.012 60) 10px,
+      oklch(0.155 0.014 60) 10px,
+      oklch(0.155 0.014 60) 20px
+    );
+  border: 1px dashed oklch(0.45 0.10 55 / 0.4);
+}
+
+/* ============================================================================
+   BIBLIOGRAPHY (generated-site only, kept here for shared stylesheet)
+   ============================================================================ */
+
+.src-card {
+  position: relative;
+  padding: 20px 22px;
+  background: oklch(0.165 0.014 60 / 0.55);
+  border: 1px solid var(--rule);
+  transition: border-color 0.15s;
+}
+.src-card:hover { border-color: oklch(0.45 0.10 55 / 0.45); }
+
+.tok {
+  display: inline-block;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  padding: 3px 6px;
+  color: var(--ink-2);
+  background: oklch(0.20 0.012 60 / 0.6);
+  border: 1px solid var(--rule);
+  margin: 2px;
+  border-radius: 2px;
+  transition: all 0.15s;
+}
+.tok:hover { color: var(--amber); border-color: oklch(0.45 0.10 55 / 0.5); }
+
+/* ============================================================================
+   PROSE BODY
+   ============================================================================ */
+
+.prose-body { color: var(--ink-2); font-size: 16px; line-height: 1.7; }
+.prose-body p { margin-bottom: 1.1em; }
+.prose-body p:last-child { margin-bottom: 0; }
+.prose-body a:not(.cite) {
+  color: var(--amber);
+  text-decoration: underline;
+  text-decoration-color: oklch(0.78 0.16 60 / 0.4);
+  text-underline-offset: 3px;
+}
+
+.glyph { stroke: var(--amber); fill: none; stroke-width: 1.25; }
+
+/* ============================================================================
+   WIZARD-UI-SPECIFIC PRIMITIVES
+   Inputs, textareas, selects, badges. The generated sites don't use these
+   — only the wizard's React pages need form-level chrome.
+   ============================================================================ */
+
+.field-label {
+  display: block;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9.5px;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+  margin-bottom: 6px;
+}
+
+.field-input,
+.field-textarea,
+.field-select {
+  width: 100%;
+  padding: 10px 12px;
+  font-family: 'Inter', sans-serif;
+  font-size: 14px;
+  color: var(--ink);
+  background: oklch(0.135 0.012 60 / 0.7);
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+  outline: none;
+}
+.field-input:focus,
+.field-textarea:focus,
+.field-select:focus {
+  border-color: var(--amber);
+  box-shadow: 0 0 0 3px oklch(0.78 0.16 60 / 0.12);
+}
+.field-input::placeholder,
+.field-textarea::placeholder {
+  color: var(--ink-4);
+}
+.field-input:disabled,
+.field-textarea:disabled,
+.field-select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.field-textarea {
+  resize: vertical;
+  min-height: 80px;
+  line-height: 1.55;
+}
+.field-input.mono,
+.field-textarea.mono {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12.5px;
+}
+
+.field-radio {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: 'Inter', sans-serif;
+  font-size: 13px;
+  color: var(--ink-2);
+  cursor: pointer;
+}
+.field-radio input[type="radio"] {
+  accent-color: var(--amber);
+}
+
+/* Status pill — used for stage/auth/run status tags */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9.5px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  border-radius: 2px;
+  border: 1px solid var(--rule);
+  background: oklch(0.20 0.012 60 / 0.6);
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+.pill.ok   { color: var(--ok);   border-color: oklch(0.45 0.06 150 / 0.5); background: oklch(0.24 0.04 150 / 0.4); }
+.pill.warn { color: var(--warn); border-color: oklch(0.45 0.10 75 / 0.5);  background: oklch(0.24 0.04 75 / 0.4); }
+.pill.bad  { color: var(--bad);  border-color: oklch(0.45 0.14 30 / 0.5);  background: oklch(0.24 0.06 30 / 0.4); }
+
+/* Inline code in body text */
+.code-inline {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.85em;
+  padding: 1px 5px;
+  background: oklch(0.20 0.012 60 / 0.6);
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  color: var(--ink-2);
+}
+
+/* Pre / log block — for bridge stdout, error traces, JSON dumps */
+.code-block {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11.5px;
+  line-height: 1.55;
+  padding: 12px 14px;
+  background: oklch(0.115 0.010 60 / 0.85);
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  color: var(--ink-2);
+  white-space: pre-wrap;
+  overflow-x: auto;
+}
+
+/* Inline-prose link inside the wizard UI (not citation, not button) */
+.link-amber {
+  color: var(--amber);
+  text-decoration: underline;
+  text-decoration-color: oklch(0.78 0.16 60 / 0.4);
+  text-underline-offset: 3px;
+  transition: color 0.15s;
+}
+.link-amber:hover { color: var(--amber-glow); }
+
+/* ============================================================================
+   MISC
+   ============================================================================ */
+
+html { scroll-behavior: smooth; scroll-padding-top: 80px; }
+
+sup { line-height: 0; }
+
+::selection { background: var(--amber); color: var(--bg-0); }
+
+/* Scrollbars — pick up the warm-dark palette so they don't read as default-OS */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--rule) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--rule);
+  border-radius: 2px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--ink-4);
+}
+
+@media (max-width: 768px) {
+  .cite-c { max-width: 280px; }
+  .big-num { font-size: 60px; }
+}
