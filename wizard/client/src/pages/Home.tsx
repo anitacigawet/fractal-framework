@@ -37,7 +37,7 @@ export function Home() {
       refetchInterval: (query) => {
         const s = query.state.data?.status;
         if (!s) return 3_000;
-        if (s === "complete" || s === "error") return false;
+        if (s === "complete" || s === "error" || s === "cancelled") return false;
         return 4_000;
       },
       refetchOnWindowFocus: false,
@@ -82,9 +82,18 @@ export function Home() {
     startFrameworkRun.mutate({ location: location.trim(), mode });
   };
 
+  const cancelFrameworkRun = trpc.bridge.cancelFrameworkRun.useMutation({
+    onSuccess: () => { void run.refetch(); },
+  });
   const handleCancelRun = () => {
-    setCurrentRunId(null);
-    setEditedProposal(null);
+    if (!currentRunId) return;
+    if (runData && ["complete", "error", "cancelled"].includes(runData.status)) {
+      setCurrentRunId(null);
+      setEditedProposal(null);
+      cancelFrameworkRun.reset();
+      return;
+    }
+    cancelFrameworkRun.mutate({ id: currentRunId });
   };
 
   const handleAccept = () => {
@@ -266,6 +275,8 @@ export function Home() {
             onAccept={handleAccept}
             isCreating={createFromProposal.isPending}
             createError={createFromProposal.error?.message}
+            isCancelling={cancelFrameworkRun.isPending}
+            cancelError={cancelFrameworkRun.error?.message}
           />
         )}
       </Frame>
@@ -288,6 +299,8 @@ export function Home() {
         >
           Give the campaign a working title. The intake guide will sharpen it
           through chat before locking in the campaign.
+          {" "}This path does not yet create a research notebook or a finished
+          site. Use Pick for me above for the complete workflow.
         </p>
         <form onSubmit={handleCreate} className="flex gap-2">
           <input
@@ -473,6 +486,8 @@ interface FrameworkRunCardProps {
   onAccept: () => void;
   isCreating: boolean;
   createError?: string;
+  isCancelling: boolean;
+  cancelError?: string;
 }
 
 function FrameworkRunCard({
@@ -484,9 +499,12 @@ function FrameworkRunCard({
   onAccept,
   isCreating,
   createError,
+  isCancelling,
+  cancelError,
 }: FrameworkRunCardProps) {
   const isError = runData.status === "error";
   const isComplete = runData.status === "complete";
+  const isCancelled = runData.status === "cancelled";
   const stageIndex = STAGE_STEPS.findIndex((s) => s.key === runData.status);
 
   return (
@@ -516,6 +534,7 @@ function FrameworkRunCard({
         <button
           type="button"
           onClick={onCancel}
+          disabled={isCancelling}
           className="link-amber t-mono"
           style={{
             fontSize: 10.5,
@@ -526,9 +545,11 @@ function FrameworkRunCard({
             cursor: "pointer",
           }}
         >
-          Cancel
+          {isCancelling ? "Stopping local run…" : isComplete || isError || isCancelled ? "Dismiss" : "Cancel local run"}
         </button>
       </div>
+
+      {cancelError && <p role="alert" style={{ color: "var(--bad)" }}>{cancelError}</p>}
 
       <div className="flex items-center gap-1.5 mb-4">
         {STAGE_STEPS.map((step, i) => {

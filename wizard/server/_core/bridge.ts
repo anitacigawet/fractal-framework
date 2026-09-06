@@ -25,22 +25,21 @@ export interface RunBridgeOptions {
   args: string[];
   timeoutMs?: number;
   onStdoutLine?: (line: string) => void;
+  signal?: AbortSignal;
 }
 
 // Picks the right Python launcher. On Windows we use `py` (the standard
 // Python launcher). Override via the BRIDGE_PYTHON env var if needed
 // (e.g. a venv-specific binary, or `python3` on Linux/macOS once we ship there).
-function pythonCommand(): string {
-  return (
-    process.env.BRIDGE_PYTHON ??
-    (process.platform === "win32" ? "py" : "python3")
-  );
+export function pythonCommand(override = process.env.BRIDGE_PYTHON, platform = process.platform): string {
+  return override?.trim() || (platform === "win32" ? "py" : "python3");
 }
 
-export function runBridge(opts: RunBridgeOptions): Promise<BridgeRunResult> {
+export function runBridge(opts: RunBridgeOptions, spawnProcess: typeof spawn = spawn): Promise<BridgeRunResult> {
+  if (opts.signal?.aborted) return Promise.reject(opts.signal.reason);
   return new Promise((resolveResult) => {
     const started = Date.now();
-    const child = spawn(
+    const child = spawnProcess(
       pythonCommand(),
       ["-m", "notebooklm_bridge.runner", ...opts.args],
       {
@@ -80,6 +79,11 @@ export function runBridge(opts: RunBridgeOptions): Promise<BridgeRunResult> {
     });
 
     let timedOut = false;
+    // Wait for child close before acknowledging cancellation. Killing a local
+    // worker cannot undo a request already accepted by the remote service.
+    const abort = () => child.kill("SIGTERM");
+    opts.signal?.addEventListener("abort", abort, { once: true });
+    if (opts.signal?.aborted) abort();
     const timeout = opts.timeoutMs
       ? setTimeout(() => {
           timedOut = true;
@@ -89,6 +93,7 @@ export function runBridge(opts: RunBridgeOptions): Promise<BridgeRunResult> {
 
     child.on("error", (err) => {
       if (timeout) clearTimeout(timeout);
+      opts.signal?.removeEventListener("abort", abort);
       resolveResult({
         exitCode: -1,
         stdout,
@@ -100,11 +105,12 @@ export function runBridge(opts: RunBridgeOptions): Promise<BridgeRunResult> {
 
     child.on("close", (exitCode) => {
       if (timeout) clearTimeout(timeout);
+      opts.signal?.removeEventListener("abort", abort);
       if (opts.onStdoutLine && stdoutBuffer) {
         opts.onStdoutLine(stdoutBuffer);
       }
       resolveResult({
-        exitCode: timedOut ? -2 : exitCode ?? -1,
+        exitCode: opts.signal?.aborted ? -3 : timedOut ? -2 : exitCode ?? -1,
         stdout,
         stderr: timedOut ? stderr + "\n[timeout]\n" : stderr,
         durationMs: Date.now() - started,

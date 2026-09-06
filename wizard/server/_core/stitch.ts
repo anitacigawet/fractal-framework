@@ -189,13 +189,14 @@ async function runPassWithRetry(
   fire: (prompt: string) => Promise<any>
 ): Promise<PassResult> {
   let lastErr: Error | null = null;
+  let lastValidationErrors: string[] = [];
   let rateLimitedCount = 0;
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     const start = Date.now();
     const prompt =
       attempt === 0
         ? params.basePrompt
-        : `${params.basePrompt}\n\nIMPORTANT (retry ${attempt}): your last response dropped or modified at least one {{TOKEN}}. Every {{TOKEN}} listed above MUST appear in the returned HTML character-for-character, including the double curly braces. Do not paraphrase, summarize, abbreviate, or remove any token.`;
+        : `${params.basePrompt}\n\nIMPORTANT (retry ${attempt}): preserve valid template slots. ${lastValidationErrors.length ? `Local validation reported: ${lastValidationErrors.slice(0, 5).join("; ")}.` : ""} Restore each token to its declared visible body or metadata role. Do not place body tokens in comments, attributes, hidden containers, or raw-text elements. Avoid duplicate or unknown tokens.`;
     try {
       const screen = await fire(prompt);
       const html = await fetchScreenHtml(screen);
@@ -217,8 +218,9 @@ async function runPassWithRetry(
       if (validation.ok) {
         return { screen, html, imageUrl, edit };
       }
+      lastValidationErrors = validation.errors;
       lastErr = new Error(
-        `Validation failed: ${validation.missing.length} token(s) missing — ${validation.missing.slice(0, 5).join(", ")}${validation.missing.length > 5 ? "..." : ""}`
+        `Validation failed: ${validation.errors.slice(0, 5).join("; ")}${validation.errors.length > 5 ? "; ..." : ""}`
       );
       // Don't return — fall through to retry. Edit is recorded only on success
       // or on final failure (via the throw below).
@@ -541,7 +543,7 @@ export async function injectAndAudit(runId: string): Promise<StitchRun> {
     const validation = validateHtml(html, spec);
     if (!validation.ok) {
       throw new Error(
-        `Pre-injection validation failed: ${validation.missing.length} token(s) missing.`
+        `Pre-injection validation failed: ${validation.errors.join("; ")}`
       );
     }
     injected = injectHtml(html, spec);
@@ -552,9 +554,9 @@ export async function injectAndAudit(runId: string): Promise<StitchRun> {
   // Audit step — non-blocking. We don't make another Stitch call here for
   // simplicity; in a future revision this can run a Stitch query on the
   // FINAL HTML to verify section-slot mapping.
-  auditResult = `Local audit: ${spec.tokens.length} tokens resolved, ${
+  auditResult = `Local structural check: ${spec.tokens.length} tokens resolved, ${
     spec.tokens.filter((t) => t.required).length
-  } required tokens validated before injection.`;
+  } required token roles validated against the parsed HTML before injection. Known hidden contexts were rejected. Browser layout, external styles, and script behavior were not visually audited.`;
 
   return updateStitchRun(runId, {
     status: "complete",

@@ -16,6 +16,7 @@ import { Link } from "wouter";
 import { trpc } from "../lib/trpc";
 import { Button, Frame, Pill, SectionMark } from "./ui";
 import type { StitchEdit, StitchRun } from "../../../shared/types";
+import { SitePreview } from "./SitePreview";
 
 interface StitchDesignPanelProps {
   campaignId: string;
@@ -965,8 +966,8 @@ function StitchPreviewIframe({ runId }: { runId: string }) {
     );
   }
   return (
-    <iframe
-      srcDoc={preview.data.html}
+    <SitePreview
+      html={preview.data.html}
       style={{
         width: "100%",
         minHeight: 600,

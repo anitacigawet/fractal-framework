@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { resolve } from "path";
 import { existsSync } from "fs";
+import { CancellableWork } from "../_core/cancellableWork";
 
 import { router, publicProcedure } from "../_core/trpc";
 import {
@@ -62,7 +63,20 @@ const vacuumProposalSchema = z.object({
 // Background pipeline — the actual work for one framework run
 // ─────────────────────────────────────────────────────────────────────────
 
-async function runFrameworkPipeline(runId: string): Promise<void> {
+const frameworkWork = new CancellableWork();
+
+async function runFrameworkPipeline(runId: string, signal: AbortSignal): Promise<void> {
+  const callBridge = async (options: Parameters<typeof runBridge>[0]) => {
+    signal.throwIfAborted();
+    const result = await runBridge({ ...options, signal });
+    signal.throwIfAborted();
+    return result;
+  };
+  const saveRun = async (patch: Parameters<typeof updateFrameworkRun>[1]) => {
+    signal.throwIfAborted();
+    await updateFrameworkRun(runId, patch);
+    signal.throwIfAborted();
+  };
   const setError = async (message: string) => {
     try {
       await updateFrameworkRun(runId, {
@@ -76,7 +90,9 @@ async function runFrameworkPipeline(runId: string): Promise<void> {
   };
 
   try {
+    signal.throwIfAborted();
     const run = await getFrameworkRun(runId);
+    signal.throwIfAborted();
     if (!run) throw new Error(`Run ${runId} not found`);
 
     const frameworkNotebookId = resolveFrameworkNotebookId();
@@ -89,7 +105,7 @@ async function runFrameworkPipeline(runId: string): Promise<void> {
     const perRunCounty = `_framework_run_${run.id}`;
 
     // ── STEP 1: Translate location → research query ──────────────────────
-    await updateFrameworkRun(runId, {
+    await saveRun({
       status: "translating",
       progress: `Asking the Framework notebook to translate "${run.location}" into a research query...`,
     });
@@ -99,7 +115,7 @@ async function runFrameworkPipeline(runId: string): Promise<void> {
       `run the framework through ${run.location}`
     );
 
-    const translateResult = await runBridge({
+    const translateResult = await callBridge({
       args: [
         "query",
         "--county",
@@ -127,13 +143,13 @@ async function runFrameworkPipeline(runId: string): Promise<void> {
     }
 
     // ── STEP 2: Create a per-location notebook and run research ──────────
-    await updateFrameworkRun(runId, {
+    await saveRun({
       status: "researching",
       progress: `Creating a fresh notebook and running ${run.mode === "fast" ? "Fast" : "Deep"} Research...`,
       research_query: researchQuery,
     });
 
-    const createResult = await runBridge({
+    const createResult = await callBridge({
       args: [
         "create-notebook",
         "--county",
@@ -157,7 +173,7 @@ async function runFrameworkPipeline(runId: string): Promise<void> {
       );
     }
 
-    await updateFrameworkRun(runId, {
+    await saveRun({
       notebook_id: locationNotebookId,
       progress: `${run.mode === "fast" ? "Fast" : "Deep"} Research running against fresh notebook ${locationNotebookId.slice(0, 8)}...`,
     });
@@ -170,7 +186,7 @@ async function runFrameworkPipeline(runId: string): Promise<void> {
     );
     const researchTimeoutMs = run.mode === "fast" ? 600_000 : 1_800_000; // 10 / 30 min
     const phaseATimeoutSec = Math.floor(researchTimeoutMs / 1000) - 30; // give Python a 30s buffer
-    const researchResult = await runBridge({
+    const researchResult = await callBridge({
       args: [
         "phase-a",
         "--county",
@@ -197,12 +213,12 @@ async function runFrameworkPipeline(runId: string): Promise<void> {
     }
 
     // ── STEP 3: Configure Vacuum Identifier persona + extract Campaign ───
-    await updateFrameworkRun(runId, {
+    await saveRun({
       status: "identifying",
       progress: "Configuring Vacuum Identifier persona and extracting Campaign proposal...",
     });
 
-    const personaResult = await runBridge({
+    const personaResult = await callBridge({
       args: [
         "phase-b",
         "--county",
@@ -226,7 +242,7 @@ async function runFrameworkPipeline(runId: string): Promise<void> {
       `identify_${run.id}`,
       `Based on the sources in this notebook, identify the single most pressing activism vacuum for ${run.location} and propose a Campaign as JSON per your instructions. Output ONLY the JSON object.`
     );
-    const identifyResult = await runBridge({
+    const identifyResult = await callBridge({
       args: [
         "query",
         "--county",
@@ -265,12 +281,21 @@ async function runFrameworkPipeline(runId: string): Promise<void> {
       );
     }
 
-    await updateFrameworkRun(runId, {
+    await saveRun({
       status: "complete",
       progress: "Complete — review the proposal below.",
       proposal: JSON.stringify(validated.data),
     });
   } catch (e) {
+    if (signal.aborted) {
+      await updateFrameworkRun(runId, {
+        status: "cancelled",
+        progress: "Local run stopped. NotebookLM requests already accepted may still finish; any created notebooks are kept.",
+        error: undefined,
+        proposal: undefined,
+      });
+      return;
+    }
     const message = e instanceof Error ? e.message : String(e);
     console.error(`[framework-run ${runId}] error:`, message);
     await setError(message);
@@ -421,8 +446,28 @@ export const bridgeRouter = router({
       }
       const run = await createFrameworkRun(input.location, input.mode);
       // Fire-and-forget; the pipeline updates the row as it progresses.
-      void runFrameworkPipeline(run.id);
+      void frameworkWork.start(run.id, signal => runFrameworkPipeline(run.id, signal))
+        .catch(error => console.error(`[framework-run ${run.id}] worker failed:`, error));
       return { id: run.id };
+    }),
+
+  cancelFrameworkRun: publicProcedure
+    .input(z.object({ id: z.string() }))
+    .mutation(async ({ input }) => {
+      const run = await getFrameworkRun(input.id);
+      if (!run) throw new Error("Framework run not found.");
+      if (["complete", "error", "cancelled"].includes(run.status)) return run;
+      const stopped = await frameworkWork.cancel(input.id);
+      if (!stopped) {
+        // No worker remains after a server restart; clear the stranded state.
+        return updateFrameworkRun(input.id, {
+          status: "cancelled",
+          progress: "No local worker is running. Remote requests already accepted may still finish; created notebooks are kept.",
+          error: undefined,
+          proposal: undefined,
+        });
+      }
+      return getFrameworkRun(input.id);
     }),
 
   // Poll endpoint — returns the current state of a framework run.

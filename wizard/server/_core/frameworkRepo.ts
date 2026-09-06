@@ -15,6 +15,7 @@ export type FrameworkRunStatus =
   | "researching"
   | "identifying"
   | "complete"
+  | "cancelled"
   | "error";
 
 export interface FrameworkRun {

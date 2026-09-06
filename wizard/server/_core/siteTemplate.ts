@@ -7,6 +7,7 @@
 
 import type { Campaign, CitationSource } from "../../shared/types";
 import { loadDesignSystemCss } from "./designSystemCss";
+import { getItem, parseNumberedItems } from "./numberedItems";
 
 interface SectionOutputs {
   meta?: string;
@@ -22,26 +23,6 @@ type CitationMap = Record<string, CitationSource>;
 // ─────────────────────────────────────────────────────────────────────────
 // Output parsing
 // ─────────────────────────────────────────────────────────────────────────
-
-interface NumberedItem {
-  number: number;
-  body: string;
-}
-
-function parseNumberedItems(text: string): NumberedItem[] {
-  const matches = [
-    ...text.matchAll(/^\s*(\d+)[.)]\s*([\s\S]*?)(?=^\s*\d+[.)]|$)/gm),
-  ];
-  return matches.map((m) => {
-    let body = m[2].trim();
-    body = body.replace(/^\*\*[^*]+\*\*\s*:?\s*/, "");
-    return { number: parseInt(m[1], 10), body };
-  });
-}
-
-function getItem(items: NumberedItem[], n: number): string | undefined {
-  return items.find((i) => i.number === n)?.body;
-}
 
 interface MetaParsed {
   title: string;

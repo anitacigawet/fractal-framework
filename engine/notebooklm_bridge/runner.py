@@ -403,11 +403,7 @@ async def cmd_list_sources(args: argparse.Namespace) -> int:
     client = BridgeNotebookLMClient()
     await client.open()
     try:
-        if client._client is None:
-            print("  ERROR: client not open", file=sys.stderr)
-            return 1
-
-        sources = await client._client.sources.list(args.notebook_id)
+        sources = await client.list_sources(args.notebook_id)
         serializable = [
             {
                 "id": getattr(source, "id", None),

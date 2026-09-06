@@ -42,6 +42,10 @@ jobs:
           set -e
           test "$status_code" -eq 1
       - run: pnpm check
+      - run: pnpm test
+      - name: Test process-shared bridge controls
+        working-directory: engine
+        run: python -B -m unittest discover -s tests -p "test_*.py" -v
       - run: pnpm build
       - run: pnpm build:showroom
       - name: Smoke-test production server
@@ -66,4 +70,4 @@ jobs:
           kill "$server_pid"
           wait "$server_pid" || true
           trap - EXIT
-      - run: pnpm audit --prod
+      - run: pnpm audit

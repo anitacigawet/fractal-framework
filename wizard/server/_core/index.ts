@@ -4,9 +4,13 @@ import { resolve } from "path";
 import { env } from "./env";
 import { appRouter } from "./router";
 import { WIZARD_ROOT } from "./paths";
+import { localRequestGuard } from "./localRequestGuard";
 
 const app = express();
 
+// Protect reads against foreign browser origins and Host rebinding as well.
+// Direct health probes/downloads without Origin remain valid on loopback.
+app.use(localRequestGuard(env.PORT));
 app.use(express.json());
 
 app.use(

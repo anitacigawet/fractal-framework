@@ -1,7 +1,7 @@
 // Stitch token spec + prompt builders + validation + injection.
 //
-// The model: the wizard never sends real content to Stitch. Instead it
-// describes the page's section shape in a text prompt, naming each content
+// The wizard sends campaign names, short copy, and the page's section shape
+// in a text prompt, naming each long-form content
 // slot with a literal {{TOKEN}} that Stitch is instructed to place verbatim.
 // Stitch returns HTML with those tokens preserved (we validate after every
 // generate/edit pass). Once the visual design is final, the wizard injects
@@ -10,36 +10,16 @@
 // .tok, .tier, .prose-body) which are then loaded via an injected <style>
 // block in the final HTML.
 //
-// Mirrors siteTemplate.ts's parsing helpers but is built around Stitch's
-// text-prompt-driven flow instead of direct HTML emission.
+// Shares numbered-output parsing with the default renderer.
 
 import type { Campaign, CitationSource } from "../../shared/types";
 import { loadDesignSystemCss } from "./designSystemCss";
+import { getItem, parseNumberedItems } from "./numberedItems";
+import { injectSlots, validateSlots, type SlotValidationResult } from "./htmlSlots";
 
 // ─────────────────────────────────────────────────────────────────────────
-// Output parsing — duplicated from siteTemplate.ts. Both files own their
-// own copies so changes to one don't accidentally affect the other.
+// Output parsing
 // ─────────────────────────────────────────────────────────────────────────
-
-interface NumberedItem {
-  number: number;
-  body: string;
-}
-
-function parseNumberedItems(text: string): NumberedItem[] {
-  const matches = [
-    ...text.matchAll(/^\s*(\d+)[.)]\s*([\s\S]*?)(?=^\s*\d+[.)]|$)/gm),
-  ];
-  return matches.map((m) => {
-    let body = m[2].trim();
-    body = body.replace(/^\*\*[^*]+\*\*\s*:?\s*/, "");
-    return { number: parseInt(m[1], 10), body };
-  });
-}
-
-function getItem(items: NumberedItem[], n: number): string | undefined {
-  return items.find((i) => i.number === n)?.body;
-}
 
 function parseMeta(
   text: string | undefined,
@@ -457,9 +437,12 @@ const AESTHETIC_DIRECTION = `Aesthetic direction:
 - Mobile-responsive. Self-contained single HTML file. Tailwind via CDN is fine for utility classes.`;
 
 const CITATION_RULES = `CITATION & TOKEN PRESERVATION (critical):
-- Every {{TOKEN}} in the prompt MUST appear in the returned HTML, character-for-character, including the double curly braces.
+- Every {{TOKEN}} in the prompt MUST appear exactly once in visible body text, character-for-character, including the double curly braces. PROJECT_NAME may repeat in the visible header/footer and in the document title or og:site_name metadata; it must still occur in the visible body.
 - The wizard will replace each {{TOKEN}} with its real content after generation. Tokens are placeholders — you are designing the chrome around them, NOT writing copy for them.
-- Tokens may appear inside text content, inside attributes, inside any element. Place them where the corresponding real content should sit.
+- Put ABOUT_BODY, STAKES_BODY and BIBLIOGRAPHY each alone inside its own div or section container, because these slots receive block HTML. Put other tokens in ordinary body text elements.
+- Never put body tokens inside attributes, comments, scripts, styles, templates, textareas, SVG, hidden or collapsed elements, or visually hidden containers. Citation-bearing tokens cannot be inside links or buttons, because the injected citations contain links.
+- Keep slots readable at desktop and mobile widths. Do not hide, clip, make transparent, or cover a slot. Do not depend on JavaScript to expose its content.
+- Metadata may contain literal page metadata. It never substitutes for a required body slot.
 - Do NOT paraphrase, summarize, translate, abbreviate, or modify any {{TOKEN}}. Do NOT add or remove tokens. Do NOT write your own copy where a token should go.
 - If you cannot fit a token, design the page so the token still appears somewhere reasonable — never drop it.`;
 
@@ -547,31 +530,14 @@ The following tokens must still appear verbatim in the returned HTML: ${spec.tok
 // Validation
 // ─────────────────────────────────────────────────────────────────────────
 
-export interface ValidationResult {
-  ok: boolean;
-  missing: string[];        // token names (not placeholders)
-  presentCount: number;
-  expectedCount: number;
-}
+export type ValidationResult = SlotValidationResult;
 
 /**
- * Check that every required token appears in the HTML at least once.
- * Returns the list of missing token names for surfacing in the UI.
+ * Validate token roles against the parsed HTML, including known non-rendering
+ * contexts. This does not evaluate arbitrary CSS, layout or script behavior.
  */
 export function validateHtml(html: string, spec: SiteSpec): ValidationResult {
-  const required = spec.tokens.filter((t) => t.required);
-  const missing: string[] = [];
-  for (const t of required) {
-    if (!html.includes(t.placeholder)) {
-      missing.push(t.name);
-    }
-  }
-  return {
-    ok: missing.length === 0,
-    missing,
-    presentCount: required.length - missing.length,
-    expectedCount: required.length,
-  };
+  return validateSlots(html, spec.tokens);
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -586,14 +552,9 @@ export function validateHtml(html: string, spec: SiteSpec): ValidationResult {
  * mis-cased hashes (e.g. `#key_facts` instead of `#key-facts`).
  */
 export function injectHtml(html: string, spec: SiteSpec): string {
-  let injected = html;
-
-  // 1. Replace every token (including optional ones — no-op if not present)
-  for (const t of spec.tokens) {
-    // Use a global non-regex replace by splitting + joining to avoid
-    // accidental regex interpretation of the placeholder string.
-    injected = injected.split(t.placeholder).join(t.injectionHtml);
-  }
+  // Validate again at the mutation boundary, then insert fragments only into
+  // their original DOM text slots. Metadata is serialized as escaped text.
+  let injected = injectSlots(html, spec.tokens);
 
   // 2. Inject design-system.css into <head> if not already present.
   const css = loadDesignSystemCss();

@@ -7,6 +7,7 @@ const now = Date.now();
 const DEMO_CAMPAIGN_ID = "cedar-county-demo";
 
 let frameworkStartedAt = 0;
+let frameworkCancelled = false;
 let frameworkLocation = "Cedar County";
 let productionStartedAt = 0;
 let stitchStartedAt = 0;
@@ -113,9 +114,9 @@ function makeCampaign(input?: Partial<Campaign>): Campaign {
 
 function frameworkRun() {
   const elapsed = Date.now() - frameworkStartedAt;
-  const complete = elapsed >= 2600;
-  const status = complete ? "complete" : elapsed < 900 ? "translating" : elapsed < 1800 ? "researching" : "identifying";
-  const progress = complete
+  const complete = !frameworkCancelled && elapsed >= 2600;
+  const status = frameworkCancelled ? "cancelled" : complete ? "complete" : elapsed < 900 ? "translating" : elapsed < 1800 ? "researching" : "identifying";
+  const progress = frameworkCancelled ? "Showroom run stopped. No external requests were made." : complete
     ? "Proposal ready for review."
     : status === "translating"
       ? "Translating the location into a research question…"
@@ -217,10 +218,14 @@ async function handle(path: string, input: any): Promise<any> {
       return campaign;
 
     case "bridge.startFrameworkRun":
+      frameworkCancelled = false;
       frameworkStartedAt = Date.now();
       frameworkLocation = input.location;
       return { id: "framework-demo-001" };
     case "bridge.getFrameworkRun": return frameworkRun();
+    case "bridge.cancelFrameworkRun":
+      if (frameworkRun().status !== "complete") frameworkCancelled = true;
+      return frameworkRun();
     case "bridge.status": return { ok: true, exitCode: 0, stdout: "Showroom adapter: external bridge disconnected", stderr: "", durationMs: 0, bridgeDir: "browser" };
     case "bridge.setupFrameworkNotebook": return { notebookId: "showroom-framework" };
     case "bridge.clearFrameworkNotebook": return { cleared: true };

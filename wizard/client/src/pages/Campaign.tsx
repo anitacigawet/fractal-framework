@@ -3,6 +3,7 @@ import { useEffect } from "react";
 import { trpc } from "../lib/trpc";
 import { Button, Frame, HashRule, Pill, SectionMark } from "../components/ui";
 import { StitchDesignPanel } from "../components/StitchDesignPanel";
+import { SitePreview } from "../components/SitePreview";
 
 export function Campaign() {
   const params = useParams<{ id: string }>();
@@ -526,8 +527,8 @@ function PreviewSection({
         </pre>
       )}
       {preview.data && (
-        <iframe
-          srcDoc={preview.data.html}
+        <SitePreview
+          html={preview.data.html}
           style={{
             width: "100%",
             minHeight: 600,

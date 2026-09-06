@@ -34,8 +34,8 @@ separate portfolio checkout as authority for this repository.
 
 ## Non-negotiable invariants
 
-- Keep the server bound to `127.0.0.1`. The tRPC procedures are unauthenticated;
-  loopback binding is the current access boundary.
+- Keep the server bound to `127.0.0.1`. Preserve its Host/Origin checks and
+  JSON-only mutation transport. There is no multi-user account authentication.
 - Never read, print, commit, or overwrite `wizard/.env`, `wizard/data/`,
   `engine/notebooklm_bridge/.budget.json`,
   `engine/notebooklm_bridge/outputs/`, or external NotebookLM login state unless
@@ -83,17 +83,19 @@ repository-wide change ready:
 ```powershell
 Set-Location wizard
 pnpm check
+pnpm test
 pnpm build
 pnpm build:showroom
 pnpm build
 
 Set-Location ..\engine
+python -B -m unittest discover -s tests -p "test_*.py" -v
 python -m notebooklm_bridge.runner --help
 
 Set-Location ..
 .\Launch_Wizard.bat /verify
 ```
 
-The second normal build is intentional. `pnpm audit --prod` is part of CI but
+The second normal build is intentional. `pnpm audit` is part of CI but
 requires registry access. Full workflow verification requires the user's own
 credentials and explicit authorization for external calls.

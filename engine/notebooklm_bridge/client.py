@@ -11,7 +11,7 @@ community wrapper that reverse-engineers the web app. Be a good citizen:
   - Default cooldown of 8 seconds between calls, with random jitter on top
     so inter-call timing is not perfectly regular (mechanical-fingerprint guard).
   - Exponential backoff on errors.
-  - Strict serial via async lock — never parallel.
+  - Strict serial via an OS file lock shared by all bridge processes.
   - Operating-hours guard rejects calls outside human-plausible hours by default.
   - Per-day query budget caps total API calls per local-day.
 
@@ -31,14 +31,20 @@ All disciplines are tunable via BRIDGE_* environment variables. To see/disable a
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import random
 import time
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+
+from .coordination import (
+    CoordinationError,
+    DailyBudgetExceededError,
+    SharedCallCoordinator,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -57,9 +63,9 @@ _OPERATING_HOURS_START = int(os.environ.get("BRIDGE_OPERATING_HOURS_START", "7")
 _OPERATING_HOURS_END = int(os.environ.get("BRIDGE_OPERATING_HOURS_END", "24"))      # 24:00 (midnight) local
 
 # ── Per-day query budget ──────────────────────────────────────────
-# Soft cap on total API calls per local-day. Persists across process
-# restarts via .budget.json in the package directory. Reset is automatic
-# on date change.
+# Cap on reserved API attempts per local-day. Shared call timing and counters
+# persist atomically via .budget.json. Valid old dates reset automatically;
+# corrupt state and persistence failures stop calls rather than reset usage.
 _DAILY_BUDGET_ENABLED = os.environ.get("BRIDGE_DAILY_BUDGET_ENABLED", "true").lower() == "true"
 _DAILY_QUERY_BUDGET = int(os.environ.get("BRIDGE_DAILY_QUERY_BUDGET", "100"))
 _BUDGET_FILE = Path(__file__).resolve().parent / ".budget.json"
@@ -67,14 +73,6 @@ _BUDGET_FILE = Path(__file__).resolve().parent / ".budget.json"
 
 class OutsideOperatingHoursError(RuntimeError):
     """Raised when an API call is attempted outside the configured operating hours."""
-
-
-class DailyBudgetExceededError(RuntimeError):
-    """Raised when the per-day query budget has been exhausted."""
-
-
-def _today_local() -> str:
-    return datetime.now().date().isoformat()
 
 
 def _check_operating_hours() -> None:
@@ -90,52 +88,18 @@ def _check_operating_hours() -> None:
         )
 
 
-def _load_budget_state() -> dict:
-    """Load the budget counter, auto-resetting if the date has rolled over."""
-    today = _today_local()
-    if _BUDGET_FILE.exists():
-        try:
-            data = json.loads(_BUDGET_FILE.read_text())
-            if data.get("date") == today:
-                return data
-        except Exception:
-            logger.warning("Could not parse %s; resetting budget state.", _BUDGET_FILE)
-    return {"date": today, "count": 0}
-
-
-def _save_budget_state(state: dict) -> None:
-    try:
-        _BUDGET_FILE.write_text(json.dumps(state))
-    except Exception:
-        logger.warning("Could not persist budget state to %s", _BUDGET_FILE)
-
-
 def _check_and_increment_budget() -> None:
-    """Raise DailyBudgetExceededError if budget is exhausted; else increment."""
-    if not _DAILY_BUDGET_ENABLED:
-        return
-    state = _load_budget_state()
-    if state["count"] >= _DAILY_QUERY_BUDGET:
-        raise DailyBudgetExceededError(
-            f"Daily query budget ({_DAILY_QUERY_BUDGET}) exhausted "
-            f"({state['count']} calls today, date={state['date']}). "
-            f"Reset is automatic on local-date change. "
-            f"Set BRIDGE_DAILY_QUERY_BUDGET higher or BRIDGE_DAILY_BUDGET_ENABLED=false to override."
-        )
-    state["count"] += 1
-    _save_budget_state(state)
+    """Atomically reserve one attempt, retaining the existing synchronous API."""
+    SharedCallCoordinator(_BUDGET_FILE).reserve_budget(
+        _DAILY_QUERY_BUDGET, _DAILY_BUDGET_ENABLED,
+    )
 
 
 def get_budget_status() -> dict:
     """Return the local daily-budget state without changing it."""
-    state = _load_budget_state()
-    return {
-        "enabled": _DAILY_BUDGET_ENABLED,
-        "limit": _DAILY_QUERY_BUDGET,
-        "count_today": state["count"],
-        "remaining": max(0, _DAILY_QUERY_BUDGET - state["count"]),
-        "date": state["date"],
-    }
+    return SharedCallCoordinator(_BUDGET_FILE).budget_status(
+        _DAILY_QUERY_BUDGET, _DAILY_BUDGET_ENABLED,
+    )
 
 
 # Per-RPC httpx timeout passed to NotebookLMClient.from_storage(). Upstream
@@ -156,12 +120,17 @@ class BridgeNotebookLMClient:
             await client.close()
     """
 
-    def __init__(self, cooldown_seconds: float = _DEFAULT_COOLDOWN_SECONDS):
+    def __init__(
+        self, cooldown_seconds: float = _DEFAULT_COOLDOWN_SECONDS,
+        *, budget_file: Path | None = None,
+    ):
         self._client_instance = None
         self._client = None
-        self._last_call_at: float = 0.0
         self._cooldown = cooldown_seconds
         self._lock = asyncio.Lock()
+        self._coordinator = SharedCallCoordinator(
+            budget_file if budget_file is not None else _BUDGET_FILE
+        )
 
     async def open(self) -> None:
         """Load session cookies and open the underlying client."""
@@ -181,46 +150,31 @@ class BridgeNotebookLMClient:
             self._client = None
             logger.info("NotebookLM client closed")
 
-    async def _respect_cooldown(self) -> None:
+    @asynccontextmanager
+    async def _call_guard(self):
+        """Hold process-shared serialization through the upstream operation.
+
+        Reservations persist before the network call. Completion time persists
+        even on provider failure/cancellation, so retries and fresh subprocesses
+        share the same cooldown. Coordination failures are never API retries.
         """
-        Pre-API-call discipline gate. Runs ALL of:
-          1. Operating-hours guard  — hard-fail if outside window
-          2. Daily budget check     — hard-fail if exhausted, otherwise increment
-          3. Cooldown with jitter   — sleep until safe to call
-
-        All API methods call this once before each network hit (inside the
-        async lock, which serializes calls).
-
-        Raises:
-            OutsideOperatingHoursError, DailyBudgetExceededError
-        """
-        _check_operating_hours()
-        _check_and_increment_budget()
-
-        elapsed = time.monotonic() - self._last_call_at
-        # Jitter is additive: the actual wait floor is cooldown + uniform(min, max).
-        # This makes inter-call timing visibly non-mechanical.
-        jitter = random.uniform(_COOLDOWN_JITTER_MIN, _COOLDOWN_JITTER_MAX)
-        target_wait = self._cooldown + jitter
-        if elapsed < target_wait:
-            wait = target_wait - elapsed
-            logger.debug(
-                "Cooldown: sleeping %.2fs (cooldown=%.1fs + jitter=%.2fs)",
-                wait, self._cooldown, jitter,
-            )
-            await asyncio.sleep(wait)
+        async with self._lock:
+            jitter = random.uniform(_COOLDOWN_JITTER_MIN, _COOLDOWN_JITTER_MAX)
+            async with self._coordinator.call(
+                interval=self._cooldown + jitter,
+                budget_limit=_DAILY_QUERY_BUDGET,
+                budget_enabled=_DAILY_BUDGET_ENABLED,
+                check_allowed=_check_operating_hours,
+            ):
+                yield
 
     async def create_notebook(self, title: str) -> str:
         """Create a new NotebookLM notebook. Returns the notebook ID."""
         if self._client is None:
             raise RuntimeError("Client not opened. Call await client.open() first.")
-        async with self._lock:
-            await self._respect_cooldown()
-            try:
-                nb = await self._client.notebooks.create(title)
-                return nb.id
-            finally:
-                self._last_call_at = time.monotonic()
+        async with self._call_guard():
+            nb = await self._client.notebooks.create(title)
+            return nb.id
 
     async def add_url_source(self, notebook_id: str, url: str, wait: bool = True) -> None:
         """
@@ -229,12 +183,8 @@ class BridgeNotebookLMClient:
         """
         if self._client is None:
             raise RuntimeError("Client not opened. Call await client.open() first.")
-        async with self._lock:
-            await self._respect_cooldown()
-            try:
-                await self._client.sources.add_url(notebook_id, url, wait=wait)
-            finally:
-                self._last_call_at = time.monotonic()
+        async with self._call_guard():
+            await self._client.sources.add_url(notebook_id, url, wait=wait)
 
     async def add_file_source(
         self, notebook_id: str, file_path: str, wait: bool = True
@@ -242,12 +192,15 @@ class BridgeNotebookLMClient:
         """Upload a local file (e.g., a PDF) as a source on a notebook."""
         if self._client is None:
             raise RuntimeError("Client not opened. Call await client.open() first.")
-        async with self._lock:
-            await self._respect_cooldown()
-            try:
-                await self._client.sources.add_file(notebook_id, file_path, wait=wait)
-            finally:
-                self._last_call_at = time.monotonic()
+        async with self._call_guard():
+            await self._client.sources.add_file(notebook_id, file_path, wait=wait)
+
+    async def list_sources(self, notebook_id: str) -> list:
+        """List sources through the same budget and timing guards as other calls."""
+        if self._client is None:
+            raise RuntimeError("Client not opened. Call await client.open() first.")
+        async with self._call_guard():
+            return await self._client.sources.list(notebook_id)
 
     # ── Deep / Fast Research (Phase A) ──────────────────────────────
     #
@@ -276,20 +229,16 @@ class BridgeNotebookLMClient:
             raise ValueError(f"mode must be 'deep' or 'fast', got {mode!r}")
         if self._client is None:
             raise RuntimeError("Client not opened. Call await client.open() first.")
-        async with self._lock:
-            await self._respect_cooldown()
-            try:
-                research = await self._client.research.start(
-                    notebook_id, query, source="web", mode=mode
-                )
-                logger.info(
-                    "Research started (mode=%s): notebook=%s task=%s",
-                    mode, notebook_id,
-                    research.get("task_id") if research else None,
-                )
-                return research or {}
-            finally:
-                self._last_call_at = time.monotonic()
+        async with self._call_guard():
+            research = await self._client.research.start(
+                notebook_id, query, source="web", mode=mode
+            )
+            logger.info(
+                "Research started (mode=%s): notebook=%s task=%s",
+                mode, notebook_id,
+                research.get("task_id") if research else None,
+            )
+            return research or {}
 
     async def poll_research(self, notebook_id: str) -> dict:
         """
@@ -298,12 +247,8 @@ class BridgeNotebookLMClient:
         """
         if self._client is None:
             raise RuntimeError("Client not opened.")
-        async with self._lock:
-            await self._respect_cooldown()
-            try:
-                return await self._client.research.poll(notebook_id)
-            finally:
-                self._last_call_at = time.monotonic()
+        async with self._call_guard():
+            return await self._client.research.poll(notebook_id)
 
     async def wait_for_research(
         self,
@@ -353,19 +298,15 @@ class BridgeNotebookLMClient:
         """
         if self._client is None:
             raise RuntimeError("Client not opened.")
-        async with self._lock:
-            await self._respect_cooldown()
-            try:
-                result = await self._client.research.import_sources(
-                    notebook_id, task_id, sources
-                )
-                logger.info(
-                    "Imported %d research sources into notebook %s",
-                    len(sources), notebook_id,
-                )
-                return result if isinstance(result, dict) else {"imported": len(sources)}
-            finally:
-                self._last_call_at = time.monotonic()
+        async with self._call_guard():
+            result = await self._client.research.import_sources(
+                notebook_id, task_id, sources
+            )
+            logger.info(
+                "Imported %d research sources into notebook %s",
+                len(sources), notebook_id,
+            )
+            return result if isinstance(result, dict) else {"imported": len(sources)}
 
     async def configure_prompt(self, notebook_id: str, prompt_text: str) -> None:
         """
@@ -377,17 +318,13 @@ class BridgeNotebookLMClient:
         if self._client is None:
             raise RuntimeError("Client not opened. Call await client.open() first.")
 
-        async with self._lock:
-            await self._respect_cooldown()
-            try:
-                await self._client.chat.configure(
-                    notebook_id=notebook_id,
-                    goal=ChatGoal.CUSTOM,
-                    response_length=ChatResponseLength.LONGER,
-                    custom_prompt=prompt_text,
-                )
-            finally:
-                self._last_call_at = time.monotonic()
+        async with self._call_guard():
+            await self._client.chat.configure(
+                notebook_id=notebook_id,
+                goal=ChatGoal.CUSTOM,
+                response_length=ChatResponseLength.LONGER,
+                custom_prompt=prompt_text,
+            )
 
     async def query(self, notebook_id: str, query_text: str) -> str:
         """Send a query to a notebook. Returns the text answer."""
@@ -396,14 +333,11 @@ class BridgeNotebookLMClient:
 
         last_error: Optional[Exception] = None
         for attempt in range(1, _MAX_RETRIES + 1):
-            async with self._lock:
-                await self._respect_cooldown()
+            async with self._call_guard():
                 try:
                     result = await self._client.chat.ask(notebook_id, query_text)
-                    self._last_call_at = time.monotonic()
                     return result.answer
                 except Exception as e:
-                    self._last_call_at = time.monotonic()
                     last_error = e
                     backoff = _BACKOFF_BASE ** attempt
                     logger.warning(

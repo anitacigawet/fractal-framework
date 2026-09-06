@@ -1,4 +1,7 @@
 import { z } from "zod";
+import { nanoid } from "nanoid";
+import { findBestSourceMatch, type NotebookSource } from "../_core/citationMatch";
+import { CampaignProductionWork, productionOutputNamespace } from "../_core/productionWork";
 
 import { router, publicProcedure } from "../_core/trpc";
 import { runBridge } from "../_core/bridge";
@@ -19,6 +22,8 @@ import {
   updateProductionRun,
 } from "../_core/productionRepo";
 import type { CitationSource } from "../../shared/types";
+
+const productionWork = new CampaignProductionWork();
 
 // ─────────────────────────────────────────────────────────────────────────
 // The six site-section queries the wizard runs against the Campaign's
@@ -71,7 +76,7 @@ async function runProductionPipeline(runId: string): Promise<void> {
     }
 
     const notebookId = campaign.notebook_id;
-    const perRunCounty = `_production_${campaign.id}`;
+    const perRunCounty = productionOutputNamespace(run.id);
     const varArgs = campaignVarArgs({
       PROJECT_NAME: campaign.project_name,
       PROJECT_MISSION: campaign.project_mission,
@@ -197,12 +202,6 @@ async function runProductionPipeline(runId: string): Promise<void> {
 // Citation → source URL resolution
 // ─────────────────────────────────────────────────────────────────────────
 
-interface NotebookSource {
-  id: string;
-  title: string;
-  url: string;
-}
-
 const TIER_TAGS = new Set(["TIER_1", "TIER_2", "TIER_3", "TIER_4"]);
 
 // Patterns in source titles that suggest a NotebookLM-generated synthesis
@@ -297,10 +296,10 @@ async function resolveCitationSources(
   if (uniqueCitations.size === 0) return {};
   const citationsList = Array.from(uniqueCitations);
 
-  // 3. Ask the LLM to map each citation to a source title
+  // 3. Ask for stable source IDs; exact titles remain accepted for compatibility.
   const sourcesList = sources
     .filter((s) => s.title)
-    .map((s, i) => `${i + 1}. "${s.title}"`)
+    .map((s) => JSON.stringify({ id: s.id, title: s.title }))
     .join("\n");
   const promptBody = `In the 6 site-section responses you generated above, here are every UNIQUE hash citation you used:
 
@@ -315,11 +314,11 @@ For each citation, identify which of these sources it refers to.
 Output ONLY valid JSON in this exact shape:
 
 {
-  "CITATION_KEY_1": "source title (verbatim, or a recognizable substring)",
+  "CITATION_KEY_1": "exact source id from the list",
   "CITATION_KEY_2": "..."
 }
 
-Where CITATION_KEY is the citation text without the brackets (e.g., "WRRC_Mohave_County_Page20_AquiferDeficit"), and the value is the source title from the list above (or a substring that uniquely identifies it). I will fuzzy-match.
+Where CITATION_KEY is the citation text without the brackets (e.g., "WRRC_Mohave_County_Page20_AquiferDeficit"), and the value is the exact source id from the list above. Do not shorten an ID or invent one. Prefer IDs; an exact, unique source title is also accepted.
 
 Skip TIER_1/TIER_2/TIER_3/TIER_4 — those are tier tags, not citation sources.
 
@@ -327,7 +326,7 @@ If a citation cannot be confidently matched to any source in the list, omit it.
 
 No preamble. No markdown fences. Just the JSON object.`;
 
-  const promptPath = writeTmpPrompt("resolve_citations", promptBody);
+  const promptPath = writeTmpPrompt(`resolve_citations_${perRunCounty}`, promptBody);
   const queryResult = await runBridge({
     args: [
       "query",
@@ -361,12 +360,15 @@ No preamble. No markdown fences. Just the JSON object.`;
     return {};
   }
 
-  // 4. Fuzzy-match each description to a real source, build the result
+  if (!mapping || typeof mapping !== "object" || Array.isArray(mapping)) return {};
+
+  // 4. Resolve identities first, rejecting ambiguous legacy descriptions.
   const result: Record<string, CitationSource> = {};
   for (const [citationId, description] of Object.entries(mapping)) {
+    if (!uniqueCitations.has(citationId)) continue;
     if (typeof description !== "string" || !description) continue;
     const matched = findBestSourceMatch(description, sources);
-    if (matched) {
+    if (matched?.url) {
       result[citationId] = { title: matched.title, url: matched.url };
     }
   }
@@ -374,38 +376,6 @@ No preamble. No markdown fences. Just the JSON object.`;
     `[citation-resolve] linked ${Object.keys(result).length}/${citationsList.length} citations to source URLs`
   );
   return result;
-}
-
-function tokenize(s: string): Set<string> {
-  return new Set(
-    s
-      .toLowerCase()
-      .split(/[^a-z0-9]+/)
-      .filter((w) => w.length >= 3)
-  );
-}
-
-function findBestSourceMatch(
-  description: string,
-  sources: NotebookSource[]
-): NotebookSource | null {
-  const descTokens = tokenize(description);
-  let best: { src: NotebookSource; score: number } | null = null;
-  for (const src of sources) {
-    if (!src.title || !src.url) continue;
-    const srcTokens = tokenize(src.title);
-    let score = 0;
-    for (const t of descTokens) {
-      if (srcTokens.has(t)) score++;
-    }
-    if (best === null || score > best.score) {
-      best = { src, score };
-    }
-  }
-  // Require at least 2 overlapping significant tokens to count as a match.
-  // Lower threshold catches more but with more false positives.
-  if (best && best.score >= 2) return best.src;
-  return null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -423,7 +393,7 @@ export const productionRouter = router({
   // `latestForCampaign` (or `get`) for progress + outputs.
   start: publicProcedure
     .input(z.object({ campaignId: z.string() }))
-    .mutation(async ({ input }) => {
+    .mutation(({ input }) => productionWork.start(input.campaignId, async () => {
       const campaign = await getCampaign(input.campaignId);
       if (!campaign) throw new Error(`Campaign ${input.campaignId} not found`);
       if (!campaign.notebook_id) {
@@ -432,10 +402,10 @@ export const productionRouter = router({
         );
       }
 
-      const run = await createProductionRun(input.campaignId);
-      void runProductionPipeline(run.id);
-      return { id: run.id };
-    }),
+      return createProductionRun(input.campaignId);
+    }, (run) => runProductionPipeline(run.id), (error) => {
+      console.error("[production] failed:", error);
+    }).then((run) => ({ id: run.id }))),
 
   get: publicProcedure
     .input(z.object({ id: z.string() }))
@@ -468,7 +438,7 @@ export const productionRouter = router({
   // update.
   resolveCitations: publicProcedure
     .input(z.object({ campaignId: z.string() }))
-    .mutation(async ({ input }) => {
+    .mutation(({ input }) => productionWork.run(input.campaignId, async () => {
       const campaign = await getCampaign(input.campaignId);
       if (!campaign) throw new Error(`Campaign ${input.campaignId} not found`);
       if (!campaign.notebook_id) {
@@ -479,7 +449,7 @@ export const productionRouter = router({
           "Campaign has no production outputs yet — run production first."
         );
       }
-      const perRunCounty = `_production_${campaign.id}`;
+      const perRunCounty = productionOutputNamespace(`citations_${nanoid(12)}`);
       const citation_sources = await resolveCitationSources(
         campaign.notebook_id,
         perRunCounty,
@@ -490,5 +460,5 @@ export const productionRouter = router({
         linkedCount: Object.keys(citation_sources).length,
         citation_sources,
       };
-    }),
+    })),
 });

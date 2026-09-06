@@ -144,6 +144,8 @@ if errorlevel 1 (
     echo ERROR: The NotebookLM bridge CLI could not start.
     exit /b 1
 )
+REM The Node wrapper must use the exact interpreter that passed verification.
+for /f "delims=" %%p in ('call "%PYTHON_EXE%" %PYTHON_ARGS% -c "import sys; print(sys.executable)"') do set "BRIDGE_PYTHON=%%p"
 popd
 exit /b 0
 

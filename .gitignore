@@ -29,6 +29,7 @@ ENV/
 
 # Bridge runtime state (regenerated per-deployment)
 engine/notebooklm_bridge/.budget.json
+engine/notebooklm_bridge/.budget.json.*
 engine/notebooklm_bridge/outputs/
 
 # IDE / editor

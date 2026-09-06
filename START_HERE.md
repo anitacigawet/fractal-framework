@@ -11,7 +11,7 @@ without reconstructing the repository from chat history.
 - Supported product: the local browser wizard only
 - Runtime shape: one loopback-only Node process plus a Python NotebookLM bridge
 - License: PolyForm Noncommercial 1.0.0
-- Active implementation task: none recorded in this repository
+- Local maintenance: validated-review fixes; see the verification commands below.
 
 The public release was deliberately reduced to a lean source distribution. Do
 not infer that removed development tools, operator interfaces, old templates,
@@ -67,8 +67,9 @@ real external operations. They may consume quotas and create cloud notebooks,
 projects, or screens. Keep ordinary code verification inert unless the user
 explicitly authorizes a live workflow test.
 
-The server API has no authentication and is safe only under its current
-`127.0.0.1` binding. Do not expose it through a public bind, proxy, or tunnel
+The server has no multi-user authentication. Its `127.0.0.1` bind, pinned Host
+and Origin checks, and JSON-only mutations protect the local browser boundary.
+Use the documented `127.0.0.1` URL, not a hostname alias. Do not expose it through a public bind, proxy, or tunnel
 without first adding an authentication and authorization design.
 
 ## Setup and normal run
@@ -103,16 +104,26 @@ installed.
 
 ## Inert verification gate
 
+Last local regression pass, 2026-09-06: 23 TypeScript/Node tests and 20 Python
+tests passed, along with type checking, normal/showroom/normal builds, launcher
+verification and isolated Chrome checks. The browser checks covered preview
+isolation, foreign-origin requests, showroom cancellation and completion, normal
+startup and HTML download. A fresh full dependency audit reported zero advisories.
+Tests used a clean source copy and synthetic state, not local credentials or
+research data. Live provider workflows and non-Windows execution were not tested.
+
 These checks do not intentionally run research or provider generation:
 
 ```powershell
 Set-Location wizard
 pnpm check
+pnpm test
 pnpm build
 pnpm build:showroom
 pnpm build
 
 Set-Location ..\engine
+python -B -m unittest discover -s tests -p "test_*.py" -v
 python -c "import notebooklm_bridge; print(notebooklm_bridge.__version__)"
 python -m notebooklm_bridge.runner --help
 
@@ -121,14 +132,15 @@ Set-Location ..
 ```
 
 CI additionally starts the already-built production server, checks
-`/api/health` and the home page, and runs `pnpm audit --prod`. The dependency
+`/api/health` and the home page, and runs `pnpm audit`. The dependency
 audit needs network access. CI also expects `runner status --force` to exit 1
 when NotebookLM authentication is unavailable; that is not a build failure.
 
 ## Known constraints to preserve or address explicitly
 
 - **Pick for me is the complete path.** Manual intake currently locks a
-  campaign without creating a notebook, so production rejects it.
+  campaign without creating a notebook. Home discloses this before intake,
+  and the campaign page warns and blocks production without a notebook.
 - **Background work is process-local.** Restarting the server can leave a
   framework, production, or Stitch row stranded in an in-progress state.
 - **The database is single-process.** Every write exports the full in-memory
@@ -139,16 +151,27 @@ when NotebookLM authentication is unavailable; that is not a build failure.
   methodology changes; **Pick for me** also needs a rebuilt Framework Notebook.
 - **Generated pages are not fully offline.** The one-file output loads Tailwind
   and fonts from CDNs when opened.
-- **There is no repository-owned unit-test suite.** The current gate is
-  type-checking, builds, Python import/CLI checks, a local server smoke test, and
-  dependency audit.
-- **Treat generated design HTML as active content.** Stitch previews currently
-  use an unsandboxed same-origin `srcDoc` iframe.
-- **Do not rely on the Stitch privacy comment as a contract.** The current
-  design prompt includes campaign identifiers and short copy before long-form
-  content is injected locally.
-- **A bridge health warning can be misleading.** The Settings check looks for
-  `Auth: ok`, while the Python status command reports `Auth: valid`.
+- **Generated HTML remains active content.** Both previews use an opaque-origin
+  sandbox without form or top-navigation permission. Exported files still run
+  their generated scripts when opened independently.
+- **The Stitch gate checks structure, not visual correctness.** It validates
+  parsed content slots, rejects known hidden/raw-text/attribute placements and
+  injects into those original slots once. Arbitrary CSS, scripts and layout can
+  still affect appearance; review the rendered result before publication.
+- **Stitch receives short copy.** Campaign names, locale and headline excerpts
+  enter the design prompt; long-form content is injected locally.
+- **Cancellation is local.** Cancel waits for the local bridge worker to stop
+  and records a cancelled run. It cannot undo requests already accepted by
+  NotebookLM, stop remote research, or delete notebooks already created.
+- **Production is exclusive per campaign.** Starts and citation backfills share
+  a process-local lock; each operation has its own output namespace. Another
+  server must still not share the database.
+- **Bridge controls span processes.** An OS lock serializes guarded calls;
+  atomic budget reservations and completion timing persist between processes.
+  Counters migrate from the old date/count format. Corrupt state or failed
+  persistence stops work instead of resetting usage. Stop the wizard before
+  explicitly inspecting/recovering its ignored budget state; do not delete lock
+  files while any bridge process is running. An interrupted call remains charged.
 
 ## Starting a new task
 

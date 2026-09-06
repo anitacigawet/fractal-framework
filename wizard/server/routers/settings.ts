@@ -14,6 +14,7 @@ import {
 } from "../_core/settings";
 import { getProvider } from "../_core/llmProvider";
 import { runBridge } from "../_core/bridge";
+import { bridgeHealth } from "../_core/bridgeHealth";
 
 const ProviderIdSchema = z.enum(["gemini", "openai", "deepseek"]);
 const StitchModelSchema = z.enum(["GEMINI_3_FLASH", "GEMINI_3_PRO"]);
@@ -64,26 +65,10 @@ async function checkBridge(): Promise<HealthCheck> {
       args: ["status", "--force"],
       timeoutMs: 30_000,
     });
-    if (result.exitCode === 0) {
-      // bridge stdout usually contains "Auth: ok" or similar
-      const authOk = /auth:\s*ok/i.test(result.stdout);
-      return {
-        key: "bridge",
-        label: "NotebookLM bridge",
-        status: authOk ? "ok" : "warn",
-        message: authOk
-          ? "Authenticated and ready."
-          : "Bridge reachable but auth state unclear. Try Re-authenticate.",
-      };
-    }
-    const expired = /Auth:\s*(expired|missing|unknown)/i.test(result.stdout);
     return {
       key: "bridge",
       label: "NotebookLM bridge",
-      status: expired ? "unconfigured" : "bad",
-      message: expired
-        ? "Not authenticated. Use the Re-authenticate button below."
-        : `Bridge exit ${result.exitCode}: ${result.stderr || result.stdout || "(no output)"}`,
+      ...bridgeHealth(result),
     };
   } catch (e) {
     return {
